@@ -2,6 +2,7 @@ from transformers import GPT2LMHeadModel, GPT2Tokenizer
 import numpy as np
 import torch
 import tensorflow as tf
+from einops.layers.torch import Rearrange
 
 
 #config model, path model.folder

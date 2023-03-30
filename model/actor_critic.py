@@ -5,7 +5,7 @@ from einops import rearrange
 
 import config
 
-class ActorCritic(tornh.nn.Module):
+class ActorCritic(torch.nn.Module):
 
     def __init__(self, config) -> None:
         super().__init__()
@@ -13,8 +13,6 @@ class ActorCritic(tornh.nn.Module):
         self.actor=actor(config.actor)
         self.critic=reward_model(config.actor)
         self.debug=config.actor.debug
-
-
 
     def forward(
         self,

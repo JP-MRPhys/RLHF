@@ -1,6 +1,5 @@
 
 #nano GPT model from karpath so as load weights from Hugginface
-
 #https://github.com/karpathy/nanoGPT/blob/master/model.py
 
 """

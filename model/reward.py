@@ -6,128 +6,122 @@ import config
 from einops.layers.torch import Rearrange
 
 #add config 
-
 #device
 #model path 
 
 
-class reward_model(torch.nn.Module):
 
-    def __init__(self, ):
-        super().__init___(config)
+import copy
+from pathlib import Path
 
-        self.config=config
+from tqdm import tqdm
+from beartype import beartype
+from beartype.typing import Tuple, Optional
 
-        self.head_hidden_size=config.head_hidden_size
+import torch
+from torch import nn
+import torch.nn.functional as F
 
-        tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
-        model = GPT2LMHeadModel.from_pretrained('gpt2')
+from einops import rearrange, repeat, reduce, pack, unpack
+from einops.layers.torch import Rearrange, Reduce
 
-        
-        self.head = torch.nn.Sequential(
-                torch.nn.Linear(self.model.config.n_embd, self.head_hidden_size),
-                torch.nn.ReLU(),
-                torch.nn.Linear(self.head_hidden_size, 1),
-                Rearrange("... 1 -> ..."),
+from LLM import GPT2
+
+from utils import masked_mean, gumbel_sample
+
+
+# helper functions
+
+
+def exists(val):
+    return val is not None
+
+# Reward Model - LLM with a scalar head
+
+@beartype
+class RewardModelGPT(nn.Module):
+    def __init__(
+        self,
+        reward_lora_scope = 'reward',
+        num_binned_output=0.,
+    ):
+        super().__init__()
+
+        self.GPT2=GPT2()
+
+        dim = GPT2.dim
+
+        self.binned_output = num_binned_output > 1
+        #(batch size, word, embedding_dim)
+        self.prompt_embed = nn.Parameter(torch.zeros(1, 1, dim))
+        self.response_embed = nn.Parameter(torch.zeros(1, 1, dim))
+
+        if self.binned_output:
+            self.to_pred = nn.Linear(dim, num_binned_output)
+        else:
+            self.to_pred = nn.Sequential(
+                nn.Linear(dim, 1, bias = False),
+                Rearrange('... 1 -> ...')
             )
 
+    def load(self, path):
+        path = Path(path)
+        assert path.exists()
+        self.load_state_dict(torch.load(str(path)))
 
-        for param in self.model.parameters():
-            param.require_grad= False
-
-        self.model.to(config.device)   
-        self.head.to(config.device)    
- 
-        
+    def finetune_parameters(self):
+        return [
+            *self.to_pred.parameters(),
+            *(self.GPT2.parameters())
+        ]
 
     def forward(
-        self, output_sequence: torch.Tensor, output_sequence_mask: torch.Tensor
-    ) -> torch.Tensor:
-        """Generate the sequence of rewards for the given output sequence
-        what is the quality of the output sequence tokens?
-        Args:
-            output_sequence (torch.Tensor): The sequence of tokens to be
-                evaluated
-            output_sequence_mask (torch.Tensor): Mask for the attention
-        Returns:
-            torch.Tensor: Rewards for the given output sequence
-        """
-        output = self.model(
-            output_sequence, attention_mask=output_sequence_mask
-        )
-        # What if the output_sequence is longer than the max context of
-        # the model?
-        rewards = self.head(output.last_hidden_state)
-        if self.config.debug:
-            print("RewardModel.forward")
-            print("output_sequence.shape", output_sequence.shape)
-            print("output_sequence", output_sequence)
-            print("reward.shape", rewards.shape)
-            print("reward", rewards)
-        return rewards
-
-    def parameters(
         self,
-    ) -> Iterable[torch.nn.Parameter]:
-        """Return the parameters of the reward model"""
-        for p in self.model.parameters():
-            yield p
-        for p in self.head.parameters():
-            yield p
+        x,
+        mask = None,
+        prompt_mask = None,
+        prompt_lengths = None,
+        labels = None,
+        sample = False,
+        sample_temperature = 1.,
+        disable_lora = True
+    ):
 
-    def get_reward(
-        self, output_sequence: torch.Tensor, output_sequence_mask: torch.Tensor
-    ) -> torch.Tensor:
-        """Get the reward for the given output sequence
-        Args:
-            output_sequence (torch.Tensor): The concatenation of initial input
-                and actor output as tokens
-            output_sequence_mask (torch.Tensor): Mask for the attention
-        """
-        rewards = self.forward(output_sequence, output_sequence_mask)
-        return rewards[:, -1]
+        assert not (exists(prompt_mask) and exists(prompt_lengths))
 
-   
-    def load(self, path: Optional[str] = None) -> None:
-        """Load the model from the path
-        Args:
-            path (str): path to the model
-        """
-        if path is None:
-            path = self.config.model_folder + "/" + self.config.model + ".pt"
-            if os.path.exists(self.config.model_folder) is False:
-                os.makedirs(self.config.model_folder)
-                print(
-                    f"Model folder does not exist. Creating it,"
-                    f"and returning without loading the model:\n{path}"
-                )
-                return
-        # load the model and the tokenizer
-        if os.path.exists(path) is False:
-            print(
-                f"Impossible to load the model:\n{path}\n"
-                f"The path doesn't exist."
+        # derive prompt mask from prompt lengths
+
+        if exists(prompt_lengths):
+            batch, seq_len = x.shape
+            arange = torch.arange(seq_len, device = x.device)
+            prompt_mask = repeat(arange, 'n -> b n', b = batch) < rearrange(prompt_lengths, 'b -> b 1')
+
+        # reward model should have an understanding of which section is prompt, and which section is response
+
+        extra_embed = None
+
+        if exists(prompt_mask):
+            extra_embed = torch.where(
+                rearrange(prompt_mask, 'b n -> b n 1'),
+                self.prompt_embed,
+                self.response_embed
             )
-            return
-        model_dict = torch.load(path)
-        self.model.load_state_dict(model_dict["model"])
-        self.head.load_state_dict(model_dict["head"])
 
-    @beartype
-    def save(self, path: Optional[str] = None) -> None:
-        """Save the model to the path
-        Args:
-            path (Optional[str], optional): Path to store the model.
-                Defaults to None.
-        """
-        if path is None:
-            path = self.config.model_folder + "/" + self.config.model + ".pt"
-            if os.path.exists(self.config.model_folder) is False:
-                os.makedirs(self.config.model_folder)
-        torch.save(
-            {"model": self.model.state_dict(), "head": self.head.state_dict()},
-            path,
-        )
+        # get embeddings from LLM
+        embeds=self.GPT2.embedding(x) # TODO add condition to check dimensions   
 
+        ###
+        pooled = masked_mean(embeds, mask, dim = 1)
+        pred = self.to_pred(pooled)
 
-critic_model=reward_model
+        if sample and self.binned_output:
+            assert not exists(labels)
+            pred = gumbel_sample(pred, temperature = sample_temperature, dim = -1)
+
+        if not exists(labels):
+            return pred
+
+        if not self.binned_output:
+            return F.mse_loss(pred, labels)
+
+        return F.cross_entropy(pred, labels)

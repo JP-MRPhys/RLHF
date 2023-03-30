@@ -7,7 +7,7 @@ from einops.layers.torch import Rearrange
 
 #config model, path model.folder
 
-class actor(torch.nn.Module):
+class GPT2(torch.nn.Module):
 
 
     def __init__(self, config):
@@ -17,10 +17,16 @@ class actor(torch.nn.Module):
         self.tokenizer = GPT2Tokenizer.from_pretrained('gpt2')
         self.model = GPT2LMHeadModel.from_pretrained('gpt2')
 
+        self.dim=model.n_embd
+
     
         self.max_model_tokens = 1024
         # save config
+        #load from config
         self.config = config
+        self.debug=False
+        self.LR=config['LR']    #rate
+        self.path=config['path']
 
     def parameters(self, **kwargs):
         """Return the parameters of the model
@@ -29,6 +35,9 @@ class actor(torch.nn.Module):
         """
         return self.model.parameters()
     
+    def embedding(self,x):
+        self.tokenizer(x)
+        #TO DO check how to obtain GPT2 model embeddings    
     def forward(
         self, sequences: torch.Tensor, sequences_mask: torch.Tensor
     ) -> torch.Tensor:
@@ -41,6 +50,7 @@ class actor(torch.nn.Module):
         Returns:
             logits (torch.Tensor): Logits for the actions taken
         """
+
         model_output = self.model.forward(
             sequences, attention_mask=sequences_mask
         )
@@ -54,7 +64,7 @@ class actor(torch.nn.Module):
     @torch.no_grad()
     def generate(
         self, states: torch.Tensor, state_mask: torch.Tensor
-    ) -> Tuple:
+    ) -> tuple:
         """Generate actions and sequences=[states, actions] from state
             (i.e. input of the prompt generator model)
         Args:
@@ -71,8 +81,8 @@ class actor(torch.nn.Module):
         # What if the states + completion are longer than the max context of
         # the model?
         sequences = self.model.generate(
-            inputs=states,
-            attention_mask=state_mask,
+            inputs=self.tokenizer(states),
+            attention_mask=state_mask,  #TODO: check shapes? not avoid tokenizer error ?
             max_length=max_tokens,
             temperature=temperature,
         )
@@ -85,9 +95,9 @@ class actor(torch.nn.Module):
             print("sequence", sequences)
             print("actions shape", actions.shape)
             print("actions", actions)
-        return actions, sequences
+        return [actions, sequences]
     
-    def load(self, path: Optional[str] = None) -> None:
+    def load(self, path= None) -> None:
         """Load the model from the path
         Args:
             path (str): Path to the model
@@ -112,7 +122,7 @@ class actor(torch.nn.Module):
         self.model.load_state_dict(model_dict["model"])
 
     
-    def save(self, path: Optional[str] = None) -> None:
+    def save(self, path = None) -> None:
         """Save the model to the path
         Args:
             path (Optional[str], optional): Path to store the model.
@@ -124,3 +134,29 @@ class actor(torch.nn.Module):
                 os.mkdir(self.config.model_folder)
         torch.save({"model": self.model.state_dict()}, path)
 
+if __name__ == '__main__':
+
+    #print(tf.__version__)
+
+    tokenizer=GPT2Tokenizer.from_pretrained('gpt2')
+    model=GPT2LMHeadModel.from_pretrained('gpt2')
+
+    prompt='what is the new'
+
+
+    for i in range(1):
+    
+
+        input_ids=tokenizer.encode(prompt, return_tensors='pt')
+        #greedy_output=model.generate(input_ids,max_length=500)
+        #print(tokenizer.decode(greedy_output[0],skip_special_tokens=True))
+
+
+        print(model.config.n_embd)
+        out=model.forward(input_ids=input_ids, attention_mask=None, output_hidden_states=True)
+        count=1
+        for s in out.hidden_states:
+            
+            print(count)
+            print(s.shape)
+            count+=1

@@ -175,7 +175,7 @@ class RL_trainer():
                 print("loss", loss.item())
 
 
-                               # update actor with loss
+                # update actor with loss
                 self.actor_optim.zero_grad()
                 loss.backward()
                 self.actor_optim.step()
@@ -212,8 +212,11 @@ class RL_trainer():
         update_checkpoint = self.config.trainer.update_checkpoint
         device = self.config.trainer.device
 
+
+    
+
         print("Start RL Training")
-        # check dimensions consistency
+        
         # at each time step num_examples memories are generated
         number_of_memories_per_learn_iteration = (
             num_examples * update_timesteps
@@ -230,3 +233,7 @@ class RL_trainer():
             "The number of timesteps (num_episodes*max_timesteps)"
             "must be a multiple of the update_timesteps"
         )      
+
+        current_time=0 
+        checkpoint_counter=0
+        
